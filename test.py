@@ -5,7 +5,7 @@ import torch.nn.parallel
 from torch.utils.data import DataLoader
 import torch.backends.cudnn as cudnn
 
-from dataloader.mvs_dataset import MVSTestSet
+from dataloader.mvs_dataset import MVSTestSet, ETH3D_Dataset
 from networks.ucsnet import UCSNet
 from utils.utils import dict2cuda, dict2numpy, mkdir_p, save_cameras, write_pfm
 
@@ -15,6 +15,8 @@ from PIL import Image
 import os.path as osp
 from collections import *
 import sys
+
+# os.environ["CUDA_VISIBLE_DEVICES"]='0'
 
 cudnn.benchmark = True
 
@@ -37,8 +39,10 @@ args = parser.parse_args()
 
 def main(args):
     # dataset, dataloader
-    testset = MVSTestSet(root_dir=args.root_path, data_list=args.test_list,
-                         max_h=args.max_h, max_w=args.max_w, num_views=args.num_views)
+    # testset = MVSTestSet(root_dir=args.root_path, data_list=args.test_list,
+    #                      max_h=args.max_h, max_w=args.max_w, num_views=args.num_views)
+    testset = ETH3D_Dataset(root_dir=args.root_path, data_list=args.test_list,
+                           max_h=args.max_h, max_w=args.max_w, num_views=args.num_views)
     test_loader = DataLoader(testset, 1, shuffle=False, num_workers=4, drop_last=False)
 
     # build model

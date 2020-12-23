@@ -236,7 +236,141 @@ class MVSTestSet(Dataset):
         res['frame_idx'] = frame_idx
         return res
 
+# new Add
+def scale_inputs_fixed(img, intrinsics, max_w, max_h, base=32):
+    h, w = img.shape[:2]
+    # if h > max_h or w > max_w:
+    #     scale = 1.0 * max_h / h
+    #     if scale * w > max_w:
+    #         scale = 1.0 * max_w / w
+    #     new_w, new_h = scale * w // base * base, scale * h // base * base
+    # else:
+    #     new_w, new_h = 1.0 * w // base * base, 1.0 * h // base * base
+    new_w, new_h = max_w, max_h
+
+    scale_w = 1.0 * new_w / w
+    scale_h = 1.0 * new_h / h
+    intrinsics[0, :] *= scale_w
+    intrinsics[1, :] *= scale_h
+    img = cv2.resize(img, (int(new_w), int(new_h)))
+    return img, intrinsics
 
 
+class ETH3D_Dataset(Dataset):
+    def __init__(self, root_dir, data_list, max_h, max_w, num_views=4):
+        super(ETH3D_Dataset, self).__init__()
 
+        self.root_dir = root_dir
+        scene_names = open(data_list, 'r').readlines()
+        self.scene_names = list(map(lambda x: x.strip(), scene_names))
+        self.num_views = num_views
+        self.max_h = max_h
+        self.max_w = max_w
+        self.generate_pairs()
+
+    def generate_pairs(self, ):
+        data_pairs = []
+        for scene_name in self.scene_names:
+            pair_list = open('{}/{}/pair.txt'.format(self.root_dir, scene_name), 'r').readlines()
+            pair_list = list(map(lambda x: x.strip(), pair_list))
+            cnt = int(pair_list[0])
+            for i in range(cnt):
+                ref_id = int(pair_list[i * 2 + 1])
+                candidates = pair_list[i * 2 + 2].split()
+                nei_id = [int(candidates[2 * j + 1]) for j in range(self.num_views)]
+
+                data_pairs.append({'scene_name': scene_name,
+                                   'frame_idx': [ref_id, ] + nei_id,})
+        self.data_pairs = data_pairs
+
+    def parse_cameras_eth3d(self, path):
+        cam_txt = open(path).readlines()
+        f = lambda xs: list(map(lambda x: list(map(float, x.strip().split())), xs))
+
+        extr_mat = f(cam_txt[1:5])
+        intr_mat = f(cam_txt[7:10])
+
+        extr_mat = np.array(extr_mat, np.float32)
+        intr_mat = np.array(intr_mat, np.float32)
+
+        # print("parse cam: {}".format(cam_txt[11])) # type of cam_txt[11] str
+        min_dep, delta, _, max_dep = list(map(float, cam_txt[11].strip().split()))
+        # print("min_depth: {}, delta: {}".format(min_dep, delta))
+        # max_dep = 1.06 * 191.5 * delta + min_dep
+        min_dep = min_dep * 0.45
+        max_dep = max_dep * 1.35
+
+        return extr_mat, intr_mat, min_dep, max_dep
+
+    def __len__(self):
+        return len(self.data_pairs)
+
+    def __getitem__(self, idx):
+        pair_dict = self.data_pairs[idx]
+
+        scene_name = pair_dict['scene_name']
+        frame_idx = pair_dict['frame_idx']
+
+        images = []
+        proj_mats_s3 = []
+        res = {}
+
+        for i, idx in enumerate(frame_idx):
+            img_path = '{}/{}/images/{:08d}.jpg'.format(self.root_dir, scene_name, idx)
+            # print("img_path: {}".format(img_path))
+
+            image = Image.open(img_path)
+            image = np.array(image, dtype=np.float32) / 255.
+
+            cam_path = '{}/{}/cams/{:08d}_cam.txt'.format(self.root_dir, scene_name, idx)
+            # print("cam_path: {}".format(cam_path))
+            extr_mat, intr_mat, min_dep, max_dep = self.parse_cameras_eth3d(cam_path)
+            # print("{} {} {} {}".format(extr_mat, intr_mat, min_dep, max_dep))
+
+            image, intr_mat = scale_inputs_fixed(image, intr_mat, max_h=self.max_h, max_w=self.max_w)
+
+            images.append(image)
+
+
+            proj_mat = np.zeros((2, 4, 4), np.float32)
+            proj_mat[0, :4, :4] = extr_mat
+            proj_mat[1, :3, :3] = intr_mat
+            proj_mats_s3.append(proj_mat)
+
+            if i == 0:
+                res['depth_values'] = np.array([min_dep, max_dep], np.float32)
+
+        proj_mats_s3 = np.stack(proj_mats_s3)
+        proj_mats_s2 = proj_mats_s3.copy()
+        proj_mats_s2[:, 1, :2, :3] = proj_mats_s3[:, 1, :2, :3] / 2.
+        proj_mats_s1 = proj_mats_s3.copy()
+        proj_mats_s1[:, 1, :2, :3] = proj_mats_s3[:, 1, :2, :3] / 4.
+        proj_mats = {'stage1': proj_mats_s1, 'stage2': proj_mats_s2, 'stage3': proj_mats_s3}
+
+        images = np.stack(images).transpose([0, 3, 1, 2])
+
+        res['imgs'] = images
+        res['proj_matrices'] = proj_mats
+        res['scene_name'] = scene_name
+        res['frame_idx'] = frame_idx
+        return res
+
+
+if __name__ == "__main__":
+    # some test code
+    root_dir = "/mnt/B/qiyh/ETH3D/training/"
+    test_list = "./datalist/eth3d/trainset.txt"
+    max_h = 1280
+    max_w = 1920
+
+    testset = ETH3D_Dataset(root_dir=root_dir,
+                         data_list=test_list,
+                         max_h=max_h,
+                         max_w=max_w,
+                         num_views=4)
+
+    sample = testset[0]
+    print("sample: {}".format(sample.keys()))
+    print(sample["depth_values"])
+    print("size: {}".format(sample['imgs'].shape))
 
